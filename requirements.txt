@@ -1,0 +1,20 @@
+# FastAPI و Uvicorn
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+
+# مكتبات الرياضيات
+numpy==1.24.3
+scipy==1.11.3
+sympy==1.12
+
+# الرسم البياني
+matplotlib==3.8.0
+seaborn==0.13.0
+
+# معالجة البيانات
+pandas==2.1.1
+
+# إضافات مفيدة
+python-multipart==0.0.6
+aiofiles==23.2.1
