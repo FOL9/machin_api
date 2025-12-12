@@ -1,27 +1,22 @@
-# Before installing: run the bootstrap script to upgrade pip/build tools
-# ./bootstrap.sh
-
-# FastAPI و Uvicorn
+# FastAPI + Uvicorn
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 
-# مكتبات الرياضيات
-numpy==2.1.3
-scipy==1.11.3
+# Core numerical libs
+numpy==2.1.4
+scipy==1.16.3
+pandas==2.2.3
 sympy==1.12
 
-# الرسم البياني
-matplotlib==3.8.0
-seaborn==0.13.0
+# Visualization
+matplotlib==3.9.1
+seaborn==0.13.2
 
-# معالجة البيانات
-pandas==2.1.1
-
-# إضافات مفيدة
+# Optional utilities
 python-multipart==0.0.6
 aiofiles==23.2.1
 
-# Optional AI integration (set GOOGLE_API_KEY in env to enable)
+# AI helpers
 google-generativeai>=0.3.0
 python-dotenv>=1.0.0
