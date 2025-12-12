@@ -7,11 +7,12 @@ Combined Version:
 - Backend: FastAPI SSHX-style pty handling with session management.
 
 Run:
-    pip install fastapi uvicorn
+    pip install fastapi uvicorn xterm-pty
+    # Note: If 'pty' doesn't work, ensure you are on a Unix-like system and you might need xterm-pty or similar.
     uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 Documentation:
-    Visit http://127.0.0.1:8000/docs for API information.
+    Visit http://127.0.0.1:8000/docss for API information.
 """
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -21,8 +22,8 @@ import os
 import threading
 import asyncio
 import signal
-import time
 import typing
+import time
 import sys
 
 # --- FastAPI App Setup ---
@@ -41,10 +42,11 @@ MAIN_LOOP: typing.Optional[asyncio.AbstractEventLoop] = None
 @app.on_event("startup")
 async def startup_event():
     global MAIN_LOOP
+    # Get the loop on which the application is running
     MAIN_LOOP = asyncio.get_event_loop()
 
 
-# --- PTY Reader Thread Logic (Unchanged from V2 for stability) ---
+# --- PTY Reader Thread Logic ---
 
 def reader_thread(sid_local: str):
     """
@@ -59,29 +61,39 @@ def reader_thread(sid_local: str):
 
         fd_local = sess["fd"]
         try:
+            # Read non-blocking data from the PTY master
             data = os.read(fd_local, 4096)
         except OSError:
             data = b""
 
         if data:
             text = data.decode("utf-8", errors="replace")
+            # Schedule the broadcast on the main event loop
             if MAIN_LOOP:
                 MAIN_LOOP.call_soon_threadsafe(asyncio.create_task, broadcast_to_session(sid_local, text))
             continue
 
         # PTY Closed / Shell Exited Handling
         if MAIN_LOOP:
-            MAIN_LOOP.call_soon_threadsafe(asyncio.create_task, broadcast_to_session(sid_local, "\r\n\x1b[33m[pty exited — respawning...]\x1b[0m\r\n"))
+            MAIN_LOOP.call_soon_threadsafe(
+                asyncio.create_task, 
+                broadcast_to_session(sid_local, "\r\n\x1b[33m[pty exited — respawning...]\x1b[0m\r\n")
+            )
         
+        # Respawn logic
         try:
             pid, new_fd = pty.fork()
         except Exception as e:
             if MAIN_LOOP:
-                MAIN_LOOP.call_soon_threadsafe(asyncio.create_task, broadcast_to_session(sid_local, f"\r\n\x1b[31m[respawn failed: {e}]\x1b[0m\r\n"))
+                MAIN_LOOP.call_soon_threadsafe(
+                    asyncio.create_task, 
+                    broadcast_to_session(sid_local, f"\r\n\x1b[31m[respawn failed: {e}]\x1b[0m\r\n")
+                )
             time.sleep(1)
             continue
 
         if pid == 0:
+            # Child process: start the shell
             shell = os.environ.get("SHELL", "/bin/bash")
             try:
                 os.setsid()
@@ -90,8 +102,9 @@ def reader_thread(sid_local: str):
             try:
                 os.execvp(shell, [shell])
             except Exception:
-                os._exit(1)
+                os._exit(1) # Exit if exec fails
 
+        # Parent process: update session with new PTY details
         with sess["lock"]:
             try:
                 os.close(sess.get("fd"))
@@ -101,7 +114,7 @@ def reader_thread(sid_local: str):
             sess["pid"] = pid
             sess["alive"] = True
             
-        time.sleep(0.05)
+        time.sleep(0.05) # Throttle respawn loop
 
 
 async def broadcast_to_session(sid: str, data: str):
@@ -112,23 +125,25 @@ async def broadcast_to_session(sid: str, data: str):
         
     websockets = list(sess["sockets"])
     to_remove = []
+    
+    # Send data asynchronously
     for ws in websockets:
         try:
             await ws.send_text(data)
         except Exception:
             to_remove.append(ws)
             
+    # Clean up disconnected sockets
     if to_remove:
         with sess["lock"]:
             for ws in to_remove:
                 sess["sockets"].discard(ws)
 
 
-# --- API Endpoints (Unchanged from V2) ---
+# --- API Endpoints ---
 
 @app.post("/session", tags=["Session Management"])
 async def create_session():
-    # ... (function body remains the same) ...
     sid = uuid.uuid4().hex
     try:
         pid, fd = pty.fork()
@@ -136,6 +151,7 @@ async def create_session():
         return JSONResponse({"error": f"pty.fork failed: {e}"}, status_code=500)
 
     if pid == 0:
+        # Child process: Execute the shell
         shell = os.environ.get("SHELL", "/bin/bash")
         try:
             os.setsid()
@@ -146,6 +162,7 @@ async def create_session():
         except Exception:
             os._exit(1)
 
+    # Parent process: Store session details
     session = {
         "fd": fd,
         "pid": pid,
@@ -156,6 +173,7 @@ async def create_session():
     with sessions_lock:
         sessions[sid] = session
 
+    # Start the background thread for reading PTY output
     thr = threading.Thread(target=reader_thread, args=(sid,), daemon=True)
     thr.start()
 
@@ -172,24 +190,26 @@ async def list_sessions():
 @app.post("/kill/{sid}", tags=["Session Management"])
 async def kill_session(sid: str):
     with sessions_lock:
-        sess = sessions.get(sid)
+        sess = sessions.pop(sid, None)
     if not sess:
         return JSONResponse({"error": "Session not found"}, status_code=404)
         
     sess["alive"] = False
     
+    # Kill the entire process group associated with the shell PID
     try:
-        os.kill(sess["pid"], signal.SIGKILL)
+        os.killpg(os.getpgid(sess["pid"]), signal.SIGKILL)
     except Exception:
-        pass
+        # Fallback to killing the process directly if os.killpg fails
+        try:
+            os.kill(sess["pid"], signal.SIGKILL)
+        except Exception:
+            pass
     
     try:
         os.close(sess["fd"])
     except Exception:
         pass
-        
-    with sessions_lock:
-        sessions.pop(sid, None)
         
     return {"status": "success", "killed": sid, "message": "Session terminated."}
 
@@ -211,11 +231,10 @@ async def ws_pty(websocket: WebSocket, sid: str):
     try:
         while True:
             try:
-                # Expects a JSON string with 'type' and 'data'/'cols'/'rows'
+                # Receive raw terminal input from the client
                 raw_data = await websocket.receive_text()
                 
-                # The backend handles data written directly to the pty
-                # We assume the client only sends raw terminal data for input here
+                # Write data directly to the PTY master's file descriptor
                 os.write(sess["fd"], raw_data.encode())
                 
             except WebSocketDisconnect:
@@ -230,7 +249,6 @@ async def ws_pty(websocket: WebSocket, sid: str):
 
 # --- HTML Frontends ---
 
-# API Documentation Page HTML (Unchanged from V2)
 DOCS_HTML = r"""
 <!doctype html>
 <html lang="en">
@@ -374,26 +392,25 @@ INDEX_HTML = r"""
         .title { font-size: 13px; color: #a89984; font-weight: 500; }
         .terminal-body { flex: 1; position: relative; background: transparent; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
         #terminal { flex: 1; min-height: 0; }
-.xterm .xterm-viewport {
-        background-color: transparent !important;
-        /* --- 🛑 FIX: HIDE SCROLLBAR (Start) --- */
-        overflow-y: hidden !important; /* Hide scrollbar for standard browsers */
-        /* Hide scrollbar for WebKit (Chrome, Safari) */
-        -ms-overflow-style: none; /* IE and Edge */
-        scrollbar-width: none; /* Firefox */
-        /* --- 🛑 FIX: HIDE SCROLLBAR (End) --- */
-    }
+        .xterm .xterm-viewport {
+            background-color: transparent !important;
+            /* --- 🛑 FIX: HIDE SCROLLBAR (Start) --- */
+            overflow-y: hidden !important; /* Hide scrollbar for standard browsers */
+            -ms-overflow-style: none; /* IE and Edge */
+            scrollbar-width: none; /* Firefox */
+            /* --- 🛑 FIX: HIDE SCROLLBAR (End) --- */
+        }
 
-    /* Hide scrollbar for WebKit (Chrome, Safari) - this is necessary */
-    .xterm .xterm-viewport::-webkit-scrollbar {
-        display: none !important;
-        width: 0 !important;
-        height: 0 !important;
-    }
-    
-    .xterm-screen {
-        background-color: transparent !important;
-    }        .xterm { height: 100% !important; padding: 4px; }
+        /* Hide scrollbar for WebKit (Chrome, Safari) - this is necessary */
+        .xterm .xterm-viewport::-webkit-scrollbar {
+            display: none !important;
+            width: 0 !important;
+            height: 0 !important;
+        }
+        
+        .xterm-screen {
+            background-color: transparent !important;
+        }        .xterm { height: 100% !important; padding: 4px; }
         .status-bar { height: 24px; width: 100%; background: #3c3836; display: flex; font-size: 12px; line-height: 24px; font-weight: bold; cursor: default; flex-shrink: 0; }
         .sb-section { padding: 0 10px; }
         .sb-active { background: #fe8019; color: #1c1c1c; }
@@ -433,10 +450,10 @@ INDEX_HTML = r"""
             color: #1c1c1c;
         }
         .palette-title {
-             padding: 8px 15px;
-             font-weight: bold;
-             color: #d79921; /* Yellow accent */
-             border-bottom: 2px solid #504945;
+            padding: 8px 15px;
+            font-weight: bold;
+            color: #d79921; /* Yellow accent */
+            border-bottom: 2px solid #504945;
         }
     </style>
 </head>
@@ -448,7 +465,7 @@ INDEX_HTML = r"""
             <div class="controls">
                 <div class="dot red" onclick="location.reload()" title="Reload Terminal"></div>
                 <div class="dot yellow" onclick="window.open('/', '_blank')" title="New Terminal Session"></div>
-                <div class="dot blue" onclick="window.open('/docs', '_blank')" title="View API Docs"></div>
+                <div class="dot blue" onclick="window.open('/docss', '_blank')" title="View API Docs"></div>
             </div>
             <div class="title">term://fastapi-pty</div>
         </div>
@@ -615,14 +632,16 @@ INDEX_HTML = r"""
                 const ws = new WebSocket(wsUrl);
                 
                 // Debounced function to send input data
+                // This batches rapid keypresses together for better network throughput
                 const sendInput = debounce((dataToSend) => {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send(dataToSend);
                     }
-                }, 4); // Delay in ms: Adjust this value (e.g., 4ms) for best balance of latency vs throughput
+                }, 4); // Delay in ms: 4ms provides a good balance for low-latency feel
                 
                 ws.onopen = () => {
                    console.log("Connected to session:", sid);
+                   term.write('\r\n\x1b[32m[Session ID: ' + sid + ']\x1b[0m\r\n');
                    setTimeout(() => { fitAddon.fit(); term.focus(); }, 100);
                 };
 
@@ -636,14 +655,14 @@ INDEX_HTML = r"""
 
                 // *** CRITICAL FIX FOR TYPING LAG ***
                 term.onData(data => {
-                  sendInput(data); // Use debounced function
+                    sendInput(data); // Use debounced function
                 });
                 
                 // Resize handling
                 const resizeHandler = () => {
                     setTimeout(() => {
                         fitAddon.fit();
-                        // Placeholder for sending PTY resize command to backend if needed
+                        // TODO: Implement PTY resize command sending to backend (ioctl)
                     }, 50);
                 };
                 
@@ -692,6 +711,9 @@ INDEX_HTML = r"""
             items.forEach((item, index) => {
                 item.classList.toggle('selected', index === selectedIndex);
             });
+            if (items[selectedIndex]) {
+                items[selectedIndex].scrollIntoView({ block: 'nearest' });
+            }
         }
         
         function selectTheme(key) {
@@ -737,6 +759,13 @@ async def index():
 if __name__ == "__main__":
     try:
         import uvicorn
+        # Note: Set reload=False for production environments
         uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
     except ImportError:
         print("Please install uvicorn: pip install uvicorn")
+    except Exception as e:
+        if 'No such file or directory' in str(e) and ('/bin/bash' in str(e) or 'sh' in str(e)):
+             print("\nERROR: The application requires a Unix-like environment (Linux/macOS) with a shell like /bin/bash.")
+             print("If running on Windows, you must run this inside WSL (Windows Subsystem for Linux).")
+        else:
+             print(f"An unexpected error occurred: {e}")
