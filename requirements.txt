@@ -1,3 +1,6 @@
+# Before installing: run the bootstrap script to upgrade pip/build tools
+# ./bootstrap.sh
+
 # FastAPI و Uvicorn
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
@@ -18,3 +21,7 @@ pandas==2.1.1
 # إضافات مفيدة
 python-multipart==0.0.6
 aiofiles==23.2.1
+
+# Optional AI integration (set GOOGLE_API_KEY in env to enable)
+google-generativeai>=0.3.0
+python-dotenv>=1.0.0
