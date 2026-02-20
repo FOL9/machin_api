@@ -36,7 +36,40 @@ try:
 except ImportError:
     import subprocess
     print("[hyprshare] Installing websockets …")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "websockets"])
+    installed = False
+
+    def _try(cmd):
+        try:
+            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
+    # 1. Try ensurepip first to bootstrap pip on systems that lack it
+    _try([sys.executable, "-m", "ensurepip", "--upgrade"])
+
+    # 2. Try pip with --break-system-packages (Debian/Ubuntu 23.04+, WSL2)
+    if _try([sys.executable, "-m", "pip", "install", "--quiet",
+             "--break-system-packages", "websockets"]):
+        installed = True
+
+    # 3. Plain pip (works on most other systems / venvs)
+    if not installed and _try([sys.executable, "-m", "pip", "install",
+                                "--quiet", "websockets"]):
+        installed = True
+
+    # 4. Try apt as a last resort (Debian/Ubuntu)
+    if not installed and _try(["sudo", "apt-get", "install", "-y", "-q",
+                                "python3-websockets"]):
+        installed = True
+
+    if not installed:
+        print("[hyprshare] ERROR: Could not install 'websockets' automatically.")
+        print("  Please install it manually with one of:")
+        print(f"    {sys.executable} -m pip install --break-system-packages websockets")
+        print("    sudo apt install python3-websockets")
+        sys.exit(1)
+
     import websockets
     from websockets.exceptions import ConnectionClosed
 
